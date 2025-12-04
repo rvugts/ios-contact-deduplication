@@ -193,9 +193,6 @@ source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
 
-### Large File Processing
-For very large contact files (20,000+ contacts), processing may take several minutes. The application shows progress indicators. Be patient and ensure you have sufficient disk space.
-
 ### Malformed vCard Files
 The tool handles malformed vCard files gracefully, including those with Base64-encoded binary data. If you see warnings about skipped blocks, those contacts are still preserved using manual parsing. All contacts from your export will be included in the output.
 
