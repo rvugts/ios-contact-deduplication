@@ -203,9 +203,50 @@ class PreviewGenerator:
             print("=" * 80)
             print()
             
-            # Ask if user wants to see all merges
-            response = input(f"Show all {len(duplicate_groups)} merge previews? (yes/no): ").strip().lower()
-            if response in ['yes', 'y']:
+            # Ask if user wants to see all merges (skip if stdin is not a TTY)
+            try:
+                import sys
+                if sys.stdin.isatty():
+                    response = input(f"Show all {len(duplicate_groups)} merge previews? (yes/no): ").strip().lower()
+                    if response in ['yes', 'y']:
+                        print("\n" + "=" * 80)
+                        print("ALL MERGE PREVIEWS")
+                        print("=" * 80)
+                        print()
+                        # Recursively call to show all
+                        for group_id, group in enumerate(duplicate_groups, 1):
+                            merged = merged_contacts_map.get(group_id)
+                            if not merged:
+                                continue
+                            
+                            print(f"Group #{group_id} → Merged Contact:")
+                            print(f"  Name: {merged.get('name', 'Unknown')}")
+                            
+                            phones = merged.get('phones', [])
+                            if phones:
+                                phone_str = ', '.join([p.get('number', '') for p in phones[:3]])
+                                if len(phones) > 3:
+                                    phone_str += f" (+{len(phones) - 3} more)"
+                                print(f"  Phones: {phone_str}")
+                            
+                            emails = merged.get('emails', [])
+                            if emails:
+                                email_str = ', '.join([e.get('address', '') for e in emails[:3]])
+                                if len(emails) > 3:
+                                    email_str += f" (+{len(emails) - 3} more)"
+                                print(f"  Emails: {email_str}")
+                            
+                            print(f"  Source contacts: {len(group)}")
+                            print()
+                        
+                        print("=" * 80)
+                        print()
+                else:
+                    # Non-interactive mode, don't show all
+                    pass
+            except (EOFError, KeyboardInterrupt):
+                # Handle EOF (non-interactive) gracefully
+                pass
                 print("\n" + "=" * 80)
                 print("ALL MERGE PREVIEWS")
                 print("=" * 80)

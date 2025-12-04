@@ -81,56 +81,65 @@ def parse_vcard_file(file_path: Path) -> List[Dict[str, Any]]:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
         
-        # Try parsing all at once first (faster for valid files)
+        # Always use block-by-block parsing to preserve raw vCard blocks with binary data
+        # This ensures photos and Base64 data are preserved
+        vcard_blocks = _split_vcard_blocks(content)
+        logger.info(f"Split file into {len(vcard_blocks)} vCard blocks")
+        
+        # Try bulk parsing first to see if it works, but we'll still use blocks for raw data
         try:
-            vcards = vobject.readComponents(content)
-            for vcard in vcards:
-                try:
-                    contact = _parse_single_vcard(vcard)
-                    if contact:
-                        contacts.append(contact)
-                except Exception as e:
-                    logger.warning(f"Error parsing vCard entry: {e}")
-                    continue
+            # Test if bulk parsing works (for validation)
+            test_vcards = list(vobject.readComponents(content))
+            # If it works, we'll use block-by-block with raw blocks preserved
         except Exception as e:
-            # If bulk parsing fails, try parsing block by block
-            logger.info(f"Bulk parsing failed, trying block-by-block parsing: {e}")
-            vcard_blocks = _split_vcard_blocks(content)
-            logger.info(f"Split file into {len(vcard_blocks)} vCard blocks")
-            
-            parsed_count = 0
-            failed_count = 0
-            
-            for block_num, block in enumerate(vcard_blocks, 1):
-                block_parsed = False
-                try:
-                    # Parse single vCard block
-                    vcards = list(vobject.readComponents(block))
-                    for vcard in vcards:
-                        try:
-                            contact = _parse_single_vcard(vcard)
-                            if contact:
-                                contacts.append(contact)
-                                parsed_count += 1
-                                block_parsed = True
-                        except Exception as e:
-                            logger.debug(f"Error parsing vCard entry in block {block_num}: {e}")
-                            continue
-                    
-                    # If vobject parsed but didn't yield any contacts, try manual parsing
-                    if not block_parsed:
-                        logger.debug(f"vobject parsed block {block_num} but yielded no contacts, trying manual extraction")
-                        contact = _parse_vcard_manually(block, block_num)
+            # Bulk parsing failed, will use block-by-block with manual fallback
+            logger.info(f"Bulk parsing test failed, will use block-by-block parsing: {e}")
+        
+        # Always parse block-by-block to preserve raw_vcard_block (critical for binary data)
+        parsed_count = 0
+        failed_count = 0
+        
+        for block_num, block in enumerate(vcard_blocks, 1):
+            block_parsed = False
+            try:
+                # Parse single vCard block
+                vcards = list(vobject.readComponents(block))
+                for vcard in vcards:
+                    try:
+                        # CRITICAL: Always pass raw block to preserve binary data (photos, Base64)
+                        # The raw block contains the original vCard with all binary data intact
+                        contact = _parse_single_vcard(vcard, raw_block=block)
                         if contact:
+                            # Ensure raw_vcard_block is set (critical for binary data preservation)
+                            if 'raw_vcard_block' not in contact or not contact['raw_vcard_block']:
+                                contact['raw_vcard_block'] = block
                             contacts.append(contact)
                             parsed_count += 1
                             block_parsed = True
-                            
-                except Exception as e:
+                    except Exception as e:
+                        logger.debug(f"Error parsing vCard entry in block {block_num}: {e}")
+                        continue
+                
+                # If vobject parsed but didn't yield any contacts, try manual parsing
+                if not block_parsed:
+                    logger.debug(f"vobject parsed block {block_num} but yielded no contacts, trying manual extraction")
+                    contact = _parse_vcard_manually(block, block_num)
+                    if contact:
+                        # Ensure raw_vcard_block is preserved
+                        if 'raw_vcard_block' not in contact or not contact['raw_vcard_block']:
+                            contact['raw_vcard_block'] = block
+                        contacts.append(contact)
+                        parsed_count += 1
+                        block_parsed = True
+                        
+            except Exception as e:
                     # If vobject fails, try to extract basic info manually and preserve raw block
                     logger.debug(f"vobject parsing failed for block {block_num}, attempting manual extraction: {e}")
                     contact = _parse_vcard_manually(block, block_num)
                     if contact:
+                        # Ensure raw_vcard_block is preserved
+                        if 'raw_vcard_block' not in contact or not contact['raw_vcard_block']:
+                            contact['raw_vcard_block'] = block
                         contacts.append(contact)
                         parsed_count += 1
                     else:
@@ -156,7 +165,7 @@ def parse_vcard_file(file_path: Path) -> List[Dict[str, Any]]:
                                 'anniversary': None,
                                 'photo': None,
                                 'custom_fields': {},
-                                'raw_vcard_block': block
+                                'raw_vcard_block': block  # CRITICAL: Preserve raw block for binary data
                             }
                             contacts.append(minimal_contact)
                             parsed_count += 1
@@ -260,9 +269,9 @@ def _parse_vcard_manually(vcard_block: str, block_num: int) -> Optional[Dict[str
         if full_value:
             _process_manual_field(contact, current_field, full_value)
     
-    # Always return the contact if we have a raw block, even if we couldn't extract fields
-    # This preserves the contact data even if parsing fails
-    # We'll use the raw block when writing back
+    # Always preserve the raw vCard block - this is critical for binary data (photos, Base64)
+    # The raw block contains ALL original data including Base64-encoded binary content
+    # We'll use the raw block when writing back to preserve everything
     # If we couldn't extract a name, try to generate one from the raw block
     original_name = contact['name']
     name_was_placeholder = original_name.startswith('Contact ') if original_name else False
@@ -357,12 +366,13 @@ def _process_manual_field(contact: Dict[str, Any], field_name: str, value: str) 
         contact['custom_fields'][field_name].append({'value': value, 'serialized': f"{field_name}:{value}"})
 
 
-def _parse_single_vcard(vcard: vobject.base.Component) -> Optional[Dict[str, Any]]:
+def _parse_single_vcard(vcard: vobject.base.Component, raw_block: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Parse a single vCard object into a contact dictionary.
     
     Args:
         vcard: vobject vCard component
+        raw_block: Optional raw vCard block string (preserves binary data)
     
     Returns:
         Contact dictionary or None if invalid
@@ -388,6 +398,10 @@ def _parse_single_vcard(vcard: vobject.base.Component) -> Optional[Dict[str, Any
         'custom_fields': {},
         'raw_vcard': vcard
     }
+    
+    # Preserve raw vCard block if provided (critical for binary data)
+    if raw_block:
+        contact['raw_vcard_block'] = raw_block
     
     # Name parsing
     if hasattr(vcard, 'n'):
@@ -416,9 +430,18 @@ def _parse_single_vcard(vcard: vobject.base.Component) -> Optional[Dict[str, Any
     # Phone numbers
     if hasattr(vcard, 'tel_list'):
         for tel in vcard.tel_list:
+            # Extract TYPE parameters from params dict (vobject stores them here)
+            types = []
+            if hasattr(tel, 'params') and tel.params:
+                type_params = tel.params.get('TYPE', [])
+                if isinstance(type_params, list):
+                    types = [str(t).upper() for t in type_params]
+                elif type_params:
+                    types = [str(type_params).upper()]
+            
             phone_info = {
                 'number': tel.value,
-                'type': ','.join(tel.type_param_list) if hasattr(tel, 'type_param_list') else 'OTHER'
+                'type': ','.join(types) if types else 'OTHER'
             }
             contact['phones'].append(phone_info)
     
@@ -435,14 +458,26 @@ def _parse_single_vcard(vcard: vobject.base.Component) -> Optional[Dict[str, Any
     if hasattr(vcard, 'adr_list'):
         for adr in vcard.adr_list:
             addr_parts = adr.value
-            address_info = {
-                'type': ','.join(adr.type_param_list) if hasattr(adr, 'type_param_list') else 'OTHER',
-                'street': addr.street or '',
-                'city': addr.city or '',
-                'region': addr.region or '',
-                'postal_code': addr.code or '',
-                'country': addr.country or ''
-            }
+            # vobject address objects have different attribute access
+            if isinstance(addr_parts, (list, tuple)) and len(addr_parts) >= 7:
+                address_info = {
+                    'type': ','.join(adr.type_param_list) if hasattr(adr, 'type_param_list') else 'OTHER',
+                    'street': addr_parts[2] if len(addr_parts) > 2 else '',
+                    'city': addr_parts[3] if len(addr_parts) > 3 else '',
+                    'region': addr_parts[4] if len(addr_parts) > 4 else '',
+                    'postal_code': addr_parts[5] if len(addr_parts) > 5 else '',
+                    'country': addr_parts[6] if len(addr_parts) > 6 else ''
+                }
+            else:
+                # Fallback for different address formats
+                address_info = {
+                    'type': ','.join(adr.type_param_list) if hasattr(adr, 'type_param_list') else 'OTHER',
+                    'street': str(addr_parts[2]) if isinstance(addr_parts, (list, tuple)) and len(addr_parts) > 2 else '',
+                    'city': str(addr_parts[3]) if isinstance(addr_parts, (list, tuple)) and len(addr_parts) > 3 else '',
+                    'region': str(addr_parts[4]) if isinstance(addr_parts, (list, tuple)) and len(addr_parts) > 4 else '',
+                    'postal_code': str(addr_parts[5]) if isinstance(addr_parts, (list, tuple)) and len(addr_parts) > 5 else '',
+                    'country': str(addr_parts[6]) if isinstance(addr_parts, (list, tuple)) and len(addr_parts) > 6 else ''
+                }
             contact['addresses'].append(address_info)
     
     # URLs
@@ -505,6 +540,38 @@ def _parse_single_vcard(vcard: vobject.base.Component) -> Optional[Dict[str, Any
     return contact
 
 
+def _clean_vcard_block(block: str) -> str:
+    """
+    Remove blank lines from a vCard block while preserving line folding.
+    
+    Args:
+        block: Raw vCard block string
+    
+    Returns:
+        Cleaned vCard block with no blank lines
+    """
+    lines = block.split('\n')
+    cleaned_lines = []
+    
+    for line in lines:
+        # Keep non-blank lines
+        if line.strip():
+            cleaned_lines.append(line)
+        # Also keep lines that are line continuations (start with space/tab)
+        # This preserves proper vCard line folding
+        elif line.startswith(' ') or line.startswith('\t'):
+            cleaned_lines.append(line)
+        # Skip blank lines
+    
+    # Join with newlines, ensuring no double newlines
+    cleaned_block = '\n'.join(cleaned_lines)
+    
+    # Remove any trailing newlines
+    cleaned_block = cleaned_block.rstrip('\n\r')
+    
+    return cleaned_block
+
+
 def write_vcard_file(contacts: List[Dict[str, Any]], output_path: Path) -> None:
     """
     Write contacts to a vCard file.
@@ -519,21 +586,182 @@ def write_vcard_file(contacts: List[Dict[str, Any]], output_path: Path) -> None:
     
     for contact in contacts:
         try:
-            # If we have raw vCard block, use it directly (preserves Base64 data)
+            # Always use raw_vcard_block if available (preserves all binary data including photos)
+            # Since we now always preserve raw_vcard_block during parsing, this should always be available
             if 'raw_vcard_block' in contact and contact['raw_vcard_block']:
-                vcard_strings.append(contact['raw_vcard_block'])
+                cleaned_block = _clean_vcard_block(contact['raw_vcard_block'])
+                vcard_strings.append(cleaned_block)
             else:
-                # Otherwise, construct from parsed data
-                vcard = _contact_to_vcard(contact)
-                vcard_strings.append(vcard.serialize())
+                # Fallback: construct from parsed data (should rarely happen now)
+                # This preserves the contact even if raw_vcard_block is missing
+                logger.warning(f"Contact {contact.get('name', 'Unknown')} missing raw_vcard_block, using serialization fallback")
+                try:
+                    vcard = _contact_to_vcard(contact)
+                    serialized = vcard.serialize()
+                    cleaned_block = _clean_vcard_block(serialized)
+                    vcard_strings.append(cleaned_block)
+                except Exception as serialize_error:
+                    logger.error(f"Failed to serialize contact {contact.get('name', 'Unknown')}: {serialize_error}")
+                    # Contact will be missing from output - this should not happen with proper raw_vcard_block preservation
         except Exception as e:
-            logger.warning(f"Error serializing contact {contact.get('name', 'Unknown')}: {e}")
-            continue
+            logger.error(f"Unexpected error processing contact {contact.get('name', 'Unknown')}: {e}")
+            # Try raw_vcard_block as last resort
+            if 'raw_vcard_block' in contact and contact['raw_vcard_block']:
+                try:
+                    cleaned_block = _clean_vcard_block(contact['raw_vcard_block'])
+                    vcard_strings.append(cleaned_block)
+                except Exception:
+                    logger.error(f"Could not write raw_vcard_block for {contact.get('name', 'Unknown')}, contact will be lost")
+            else:
+                logger.error(f"No raw_vcard_block available for {contact.get('name', 'Unknown')}, contact will be lost")
     
+    # Join vCard blocks with double newline (one blank line between blocks is acceptable)
+    # But ensure no blank lines within blocks
     with open(output_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(vcard_strings))
+        f.write('\n\n'.join(vcard_strings))
+        if vcard_strings:  # Add final newline if we wrote anything
+            f.write('\n')
     
     logger.info(f"Successfully wrote {len(contacts)} contacts to {output_path}")
+
+
+def validate_vcard_file(
+    output_path: Path,
+    expected_contact_count: int,
+    input_contact_count: int,
+    duplicate_groups_count: int
+) -> tuple[bool, Dict[str, Any]]:
+    """
+    Validate the output vCard file to ensure no data was lost.
+    
+    Args:
+        output_path: Path to the output vCard file
+        expected_contact_count: Expected number of contacts in output (after merging)
+        input_contact_count: Original number of contacts in input
+        duplicate_groups_count: Number of duplicate groups that were merged
+    
+    Returns:
+        Tuple of (is_valid, validation_report_dict)
+    """
+    report = {
+        'valid': False,
+        'output_contact_count': 0,
+        'expected_contact_count': expected_contact_count,
+        'input_contact_count': input_contact_count,
+        'duplicate_groups_count': duplicate_groups_count,
+        'contacts_lost': 0,
+        'parse_successful': False,
+        'errors': [],
+        'warnings': []
+    }
+    
+    if not output_path.exists():
+        report['errors'].append(f"Output file does not exist: {output_path}")
+        return False, report
+    
+    try:
+        # Try to parse the output file
+        output_contacts = parse_vcard_file(output_path)
+        report['parse_successful'] = True
+        report['output_contact_count'] = len(output_contacts)
+        
+        # Check contact count
+        if len(output_contacts) != expected_contact_count:
+            report['errors'].append(
+                f"Contact count mismatch: expected {expected_contact_count}, got {len(output_contacts)}"
+            )
+            report['contacts_lost'] = expected_contact_count - len(output_contacts)
+        else:
+            logger.info(f"Validation: Contact count matches expected ({expected_contact_count})")
+        
+        # Verify all contacts have required fields
+        contacts_without_name = []
+        contacts_without_data = []
+        
+        # Check phone type preservation
+        total_phones_with_types = 0
+        phones_with_types = 0
+        
+        for i, contact in enumerate(output_contacts, 1):
+            has_name = bool(contact.get('name') and not contact.get('name', '').startswith('Contact '))
+            has_phone = bool(contact.get('phones'))
+            has_email = bool(contact.get('emails'))
+            has_org = bool(contact.get('organization'))
+            
+            if not has_name:
+                contacts_without_name.append(i)
+            
+            if not (has_name or has_phone or has_email or has_org):
+                contacts_without_data.append(i)
+            
+            # Count phones with types
+            for phone in contact.get('phones', []):
+                total_phones_with_types += 1
+                if phone.get('type') and phone['type'] != 'OTHER':
+                    phones_with_types += 1
+        
+        if contacts_without_name:
+            report['warnings'].append(
+                f"Found {len(contacts_without_name)} contacts without proper names (indices: {contacts_without_name[:10]})"
+            )
+        
+        if contacts_without_data:
+            report['errors'].append(
+                f"Found {len(contacts_without_data)} contacts without any data (indices: {contacts_without_data[:10]})"
+            )
+        
+        # Report phone type preservation
+        if total_phones_with_types > 0:
+            type_preservation_percent = (phones_with_types / total_phones_with_types * 100) if total_phones_with_types > 0 else 0
+            report['phone_types'] = {
+                'total_phones': total_phones_with_types,
+                'phones_with_types': phones_with_types,
+                'preservation_percent': type_preservation_percent
+            }
+            logger.info(f"Phone type preservation: {phones_with_types}/{total_phones_with_types} phones have types ({type_preservation_percent:.1f}%)")
+        
+        # Check for blank lines in the file (should not exist within vCard blocks)
+        with open(output_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            lines = content.split('\n')
+            
+            # Check for blank lines within vCard blocks
+            in_vcard = False
+            blank_lines_in_block = []
+            current_block_start = 0
+            
+            for i, line in enumerate(lines, 1):
+                if line.strip().upper() == 'BEGIN:VCARD':
+                    in_vcard = True
+                    current_block_start = i
+                elif line.strip().upper() == 'END:VCARD':
+                    if in_vcard:
+                        in_vcard = False
+                elif in_vcard and not line.strip() and not (line.startswith(' ') or line.startswith('\t')):
+                    # Blank line within vCard block (not a continuation line)
+                    blank_lines_in_block.append(i)
+            
+            if blank_lines_in_block:
+                report['errors'].append(
+                    f"Found {len(blank_lines_in_block)} blank lines within vCard blocks (lines: {blank_lines_in_block[:10]})"
+                )
+        
+        # Determine if validation passed
+        report['valid'] = len(report['errors']) == 0 and report['parse_successful']
+        
+        if report['valid']:
+            logger.info("Validation passed: Output file is valid and all contacts are present")
+        else:
+            logger.warning(f"Validation failed: {len(report['errors'])} errors found")
+        
+        return report['valid'], report
+        
+    except Exception as e:
+        report['errors'].append(f"Failed to parse output file: {e}")
+        logger.error(f"Validation error: {e}")
+        return False, report
+
+
 
 
 def _contact_to_vcard(contact: Dict[str, Any]) -> vobject.base.Component:
@@ -584,8 +812,20 @@ def _contact_to_vcard(contact: Dict[str, Any]) -> vobject.base.Component:
     for phone in contact.get('phones', []):
         tel = vcard.add('tel')
         tel.value = phone['number']
-        if phone.get('type'):
-            tel.type_param = phone['type']
+        if phone.get('type') and phone['type'] != 'OTHER':
+            # Handle multiple types (comma-separated or list)
+            phone_type = phone['type']
+            if isinstance(phone_type, str):
+                # Split comma-separated types
+                types = [t.strip().upper() for t in phone_type.split(',') if t.strip()]
+            elif isinstance(phone_type, list):
+                types = [str(t).upper() for t in phone_type if t]
+            else:
+                types = [str(phone_type).upper()]
+            
+            # Set TYPE parameter (vobject expects it in params)
+            if types:
+                tel.params['TYPE'] = types
     
     # Email addresses
     for email in contact.get('emails', []):
@@ -635,9 +875,14 @@ def _contact_to_vcard(contact: Dict[str, Any]) -> vobject.base.Component:
     if contact.get('anniversary'):
         vcard.add('anniversary').value = contact['anniversary']
     
-    # Photo
+    # Photo - Note: Photos with binary data are preserved via raw_vcard_block
+    # This code path is only used as a fallback when raw_vcard_block is not available
     if contact.get('photo'):
-        vcard.add('photo').value = contact['photo']
+        try:
+            vcard.add('photo').value = contact['photo']
+        except Exception:
+            # Skip photo if it causes serialization issues (will be preserved in raw_vcard_block)
+            pass
     
     # Custom fields - handle both simple values and structured data
     for field_name, field_values in contact.get('custom_fields', {}).items():

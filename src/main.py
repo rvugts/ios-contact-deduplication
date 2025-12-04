@@ -53,6 +53,12 @@ def main():
     )
     
     parser.add_argument(
+        '--no-validate',
+        action='store_true',
+        help='Skip output validation (not recommended)'
+    )
+    
+    parser.add_argument(
         '--log-level',
         type=str,
         default='INFO',
@@ -149,11 +155,15 @@ def main():
         if preview_mode:
             preview_gen.display_preview(preview_data)
             # display_merge_preview now handles showing all and returns whether to proceed
-            should_proceed = preview_gen.display_merge_preview(duplicate_groups, merged_contacts_map, show_all=False)
-            
-            if not should_proceed:
-                logger.info("Merge cancelled by user")
-                sys.exit(0)
+            try:
+                should_proceed = preview_gen.display_merge_preview(duplicate_groups, merged_contacts_map, show_all=False)
+                
+                if not should_proceed:
+                    logger.info("Merge cancelled by user")
+                    sys.exit(0)
+            except (EOFError, KeyboardInterrupt):
+                # Non-interactive mode, proceed automatically
+                logger.info("Non-interactive mode detected, proceeding with merge")
         
         # Ask for confirmation (if not already handled in merge preview)
         if preview_mode and not args.no_confirm:
@@ -166,6 +176,54 @@ def main():
         output_path = Path(args.output)
         logger.info(f"Writing {len(final_contacts)} contacts to {output_path}")
         write_vcard_file(final_contacts, output_path)
+        
+        # Validate output file
+        if not args.no_validate:
+            logger.info("Validating output file...")
+            from src.vcard_parser import validate_vcard_file
+            
+            is_valid, validation_report = validate_vcard_file(
+                output_path=output_path,
+                expected_contact_count=len(final_contacts),
+                input_contact_count=len(contacts),
+                duplicate_groups_count=len(duplicate_groups)
+            )
+            
+            # Print validation report
+            print("\n" + "=" * 80)
+            print("VALIDATION REPORT")
+            print("=" * 80)
+            print(f"Output file: {output_path}")
+            print(f"Parse successful: {validation_report['parse_successful']}")
+            print(f"Input contacts: {validation_report['input_contact_count']}")
+            print(f"Expected output contacts: {validation_report['expected_contact_count']}")
+            print(f"Actual output contacts: {validation_report['output_contact_count']}")
+            print(f"Duplicate groups merged: {validation_report['duplicate_groups_count']}")
+            
+            if 'phone_types' in validation_report:
+                pt = validation_report['phone_types']
+                print(f"Phone type preservation: {pt['phones_with_types']}/{pt['total_phones']} phones have types ({pt['preservation_percent']:.1f}%)")
+            
+            if validation_report['errors']:
+                print(f"\nErrors ({len(validation_report['errors'])}):")
+                for error in validation_report['errors']:
+                    print(f"  ✗ {error}")
+            
+            if validation_report['warnings']:
+                print(f"\nWarnings ({len(validation_report['warnings'])}):")
+                for warning in validation_report['warnings']:
+                    print(f"  ⚠ {warning}")
+            
+            if is_valid:
+                print("\n✓ Validation PASSED: Output file is valid and all contacts are present")
+                print("=" * 80)
+            else:
+                print("\n✗ Validation FAILED: Issues found in output file")
+                print("=" * 80)
+                logger.error("Validation failed - output file may have issues")
+                sys.exit(1)
+        else:
+            logger.info("Output validation skipped (--no-validate flag used)")
         
         # Log statistics
         stats = {

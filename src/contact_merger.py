@@ -123,10 +123,22 @@ class ContactMerger:
         if not merged.get('photo') and other.get('photo'):
             merged['photo'] = other['photo']
         
-        # Raw vCard block: If either contact has raw block, preserve it
-        # (Prefer the one with more complete data, or base if both exist)
-        if other.get('raw_vcard_block') and not merged.get('raw_vcard_block'):
-            merged['raw_vcard_block'] = other['raw_vcard_block']
+        # Raw vCard block: CRITICAL for preserving binary data (photos, Base64)
+        # Prefer the raw block with more data (likely has photos/binary)
+        base_raw = merged.get('raw_vcard_block', '')
+        other_raw = other.get('raw_vcard_block', '')
+        
+        if base_raw and other_raw:
+            # Prefer the one with more data (likely has photos/binary)
+            if len(other_raw) > len(base_raw):
+                merged['raw_vcard_block'] = other_raw
+                logger.debug(f"Using other contact's raw_vcard_block (longer, likely has more binary data)")
+            # Otherwise keep base (already set)
+        elif other_raw and not base_raw:
+            # Use other's raw_vcard_block if base doesn't have one
+            merged['raw_vcard_block'] = other_raw
+            logger.debug(f"Using other contact's raw_vcard_block (base had none)")
+        # If base has one and other doesn't, keep base (already set)
         
         # Custom fields: Merge all
         merged['custom_fields'] = self._merge_custom_fields(
@@ -167,9 +179,14 @@ class ContactMerger:
         return base_value
     
     def _merge_phone_numbers(self, base_phones: List[Dict], other_phones: List[Dict]) -> List[Dict]:
-        """Merge phone number lists, keeping unique numbers."""
+        """
+        Merge phone number lists, keeping unique phone+type combinations.
+        
+        Important: The same phone number with different types (e.g., CELL vs HOME)
+        should be kept as separate entries since they represent different purposes.
+        """
         merged = []
-        seen_numbers = set()
+        seen_combinations = set()
         
         # Normalize phone numbers for comparison
         def normalize_phone(phone_dict):
@@ -177,19 +194,27 @@ class ContactMerger:
             # Remove formatting for comparison
             return ''.join(filter(str.isdigit, number))
         
+        def get_phone_key(phone_dict):
+            """Create a unique key from phone number + type combination."""
+            normalized = normalize_phone(phone_dict)
+            phone_type = phone_dict.get('type', 'OTHER').upper()
+            # Sort type values for consistent comparison (e.g., "CELL,VOICE" vs "VOICE,CELL")
+            type_parts = sorted(phone_type.split(',')) if phone_type else ['OTHER']
+            return (normalized, ','.join(type_parts))
+        
         # Add base phones
         for phone in base_phones:
-            normalized = normalize_phone(phone)
-            if normalized and normalized not in seen_numbers:
+            key = get_phone_key(phone)
+            if key[0] and key not in seen_combinations:  # key[0] is the normalized number
                 merged.append(phone.copy())
-                seen_numbers.add(normalized)
+                seen_combinations.add(key)
         
-        # Add other phones that aren't duplicates
+        # Add other phones that aren't duplicates (same number + same type)
         for phone in other_phones:
-            normalized = normalize_phone(phone)
-            if normalized and normalized not in seen_numbers:
+            key = get_phone_key(phone)
+            if key[0] and key not in seen_combinations:
                 merged.append(phone.copy())
-                seen_numbers.add(normalized)
+                seen_combinations.add(key)
         
         return merged
     
