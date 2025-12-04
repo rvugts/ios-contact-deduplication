@@ -63,10 +63,14 @@ python src/main.py --input data/input/contacts.vcf --output data/output/merged_c
 ```bash
 python src/main.py [OPTIONS]
 
-Options:
-  --input, -i PATH          Path to input vCard file (required)
-  --output, -o PATH         Path to output vCard file (required)
+Required Options:
+  --input, -i PATH          Path to input vCard file (.vcf)
+  --output, -o PATH         Path to output vCard file (.vcf)
+
+Optional Options:
   --preview, -p             Enable preview mode (default: True)
+  --no-preview              Disable preview mode
+  --no-validate             Skip output validation (not recommended)
   --log-level LEVEL         Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)
   --fuzzy-threshold NUM     Fuzzy matching threshold 0-100 (default: 85)
   --no-confirm              Skip confirmation prompt (use with caution)
@@ -79,9 +83,19 @@ Options:
 python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf
 ```
 
+**Disable preview mode:**
+```bash
+python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --no-preview
+```
+
 **Skip preview and auto-confirm:**
 ```bash
-python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --no-confirm
+python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --no-preview --no-confirm
+```
+
+**Skip output validation (not recommended):**
+```bash
+python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --no-validate
 ```
 
 **Verbose logging:**
