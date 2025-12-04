@@ -43,6 +43,8 @@ data/input/*.vcf
 data/input/*.vcard
 data/output/*.vcf
 data/output/*.vcard
+data/output/*.json
+data/output/*_preview.json
 logs/*.log
 *.log
 
