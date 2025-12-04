@@ -86,16 +86,7 @@ def parse_vcard_file(file_path: Path) -> List[Dict[str, Any]]:
         vcard_blocks = _split_vcard_blocks(content)
         logger.info(f"Split file into {len(vcard_blocks)} vCard blocks")
         
-        # Try bulk parsing first to see if it works, but we'll still use blocks for raw data
-        try:
-            # Test if bulk parsing works (for validation)
-            test_vcards = list(vobject.readComponents(content))
-            # If it works, we'll use block-by-block with raw blocks preserved
-        except Exception as e:
-            # Bulk parsing failed, will use block-by-block with manual fallback
-            logger.info(f"Bulk parsing test failed, will use block-by-block parsing: {e}")
-        
-        # Always parse block-by-block to preserve raw_vcard_block (critical for binary data)
+        # Parse block-by-block to preserve raw_vcard_block (critical for binary data)
         parsed_count = 0
         failed_count = 0
         
@@ -536,6 +527,54 @@ def _parse_single_vcard(vcard: vobject.base.Component, raw_block: Optional[str] 
                     # If serialization fails, just store the value
                     pass
                 contact['custom_fields'][key].append(field_data)
+    
+    # Name fallback: If name is still empty or a placeholder, try to generate from other fields
+    # This must run AFTER all fields are parsed (organization, name parts, etc.)
+    original_name = contact['name']
+    name_was_placeholder = original_name.startswith('Contact ') if original_name else False
+    name_was_empty = not original_name
+    
+    if not contact['name'] or contact['name'].startswith('Contact '):
+        # Try to extract from FN field in raw block if available (may have been missed)
+        if raw_block:
+            lines = raw_block.split('\n')
+            current_fn = None
+            for line in lines:
+                line_upper = line.strip().upper()
+                if line_upper.startswith('FN:'):
+                    current_fn = line.split(':', 1)[1] if ':' in line else ''
+                elif current_fn is not None and (line.startswith(' ') or line.startswith('\t')):
+                    # Continuation of FN field
+                    current_fn += line.lstrip()
+                elif current_fn is not None:
+                    # End of FN field
+                    contact['name'] = current_fn.strip()
+                    break
+        
+        # If we extracted from FN field, log it
+        if contact['name'] and contact['name'] != original_name and (name_was_placeholder or name_was_empty):
+            logger.warning(f"Contact name was {'empty' if name_was_empty else 'placeholder (' + original_name + ')'}, extracted from vCard FN field: {contact['name']}")
+        
+        # If still no name, try using organization name
+        if (not contact['name'] or contact['name'].startswith('Contact ')) and contact.get('organization'):
+            contact['name'] = contact['organization']
+            if name_was_placeholder or name_was_empty:
+                logger.warning(f"Contact name was {'empty' if name_was_empty else 'placeholder (' + original_name + ')'}, using organization name: {contact['name']}")
+        
+        # If still no name, try generating from name parts
+        if (not contact['name'] or contact['name'].startswith('Contact ')) and (contact.get('first_name') or contact.get('last_name')):
+            name_parts = [
+                contact.get('prefix', ''),
+                contact.get('first_name', ''),
+                contact.get('middle_name', ''),
+                contact.get('last_name', ''),
+                contact.get('suffix', '')
+            ]
+            generated_name = ' '.join(filter(None, name_parts)).strip()
+            if generated_name:
+                contact['name'] = generated_name
+                if name_was_placeholder or name_was_empty:
+                    logger.warning(f"Contact name was {'empty' if name_was_empty else 'placeholder (' + original_name + ')'}, generated from name parts: {contact['name']}")
     
     return contact
 
