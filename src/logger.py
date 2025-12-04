@@ -66,7 +66,7 @@ def setup_logger(
     file_handler.setFormatter(detailed_formatter)
     logger.addHandler(file_handler)
 
-    logger.info(f"Logging initialized. Log file: {log_file}")
+    logger.info("Logging initialized. Log file: %s", log_file)
 
     return logger
 

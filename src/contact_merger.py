@@ -16,7 +16,7 @@ from typing import Any, Dict, List
 logger = logging.getLogger("contact_deduplication")
 
 
-class ContactMerger:
+class ContactMerger: # pylint: disable=too-few-public-methods
     """
     Intelligently merges duplicate contacts while preserving all information.
     """
