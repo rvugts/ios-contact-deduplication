@@ -45,6 +45,7 @@ data/output/*.vcf
 data/output/*.vcard
 data/output/*.json
 data/output/*_preview.json
+data/output/*.csv
 logs/*.log
 *.log
 
