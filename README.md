@@ -10,6 +10,8 @@ A Python application for merging duplicate contacts from iOS contacts export in 
 - **Base64 Data Preservation**: Preserves all Apple-specific metadata and Base64-encoded binary data (photos, X-AB* fields, etc.)
 - **Robust Parsing**: Handles malformed vCard blocks with Base64 data gracefully, ensuring no contacts are lost
 - **Enhanced Preview Mode**: Shows first 10 duplicate groups, with option to preview all merges before proceeding
+- **Phone Number Normalization**: Optional E.164 format normalization for standardized phone numbers
+- **CSV Export**: Export contacts to CSV format for easy viewing and import into spreadsheet applications
 - **Detailed Logging**: Comprehensive logs including name extraction fixes, duplicate detection, and merge operations
 - **High Performance**: Efficiently handles 10,000+ contacts
 - **User-Friendly**: Interactive CLI with progress indicators and confirmation prompts
@@ -74,6 +76,13 @@ Optional Options:
   --log-level LEVEL         Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)
   --fuzzy-threshold NUM     Fuzzy matching threshold 0-100 (default: 85)
   --no-confirm              Skip confirmation prompt (use with caution)
+  --normalize-phones        Normalize phone numbers to E.164 format in output
+  --no-normalize-phones     Explicitly disable phone normalization
+  --phone-region CODE       Two-letter country code for phone number parsing
+                            (e.g., US, GB, NL, DE). If not provided, will
+                            auto-detect from system locale or prompt user.
+                            Required when using --normalize-phones.
+  --csv, --export-csv PATH   Export contacts to CSV file
 ```
 
 ### Examples
@@ -101,6 +110,31 @@ python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --no-val
 **Verbose logging:**
 ```bash
 python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --log-level DEBUG
+```
+
+**Normalize phone numbers to E.164 format (with auto-detected region):**
+```bash
+python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --normalize-phones
+```
+
+**Normalize phone numbers with explicit region code:**
+```bash
+python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --normalize-phones --phone-region NL
+```
+
+**Non-interactive normalization (region required):**
+```bash
+python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --normalize-phones --phone-region GB --no-confirm
+```
+
+**Export to CSV:**
+```bash
+python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --csv data/output/contacts.csv
+```
+
+**Normalize phones and export to CSV:**
+```bash
+python src/main.py -i data/input/contacts.vcf -o data/output/merged.vcf --normalize-phones --phone-region US --csv data/output/contacts.csv
 ```
 
 ## How It Works
@@ -147,6 +181,37 @@ The tool ensures **zero data loss**:
   - Logs all name corrections for review
 - **Complete Contact Recovery**: All contacts from the export are processed, even those with Base64 data that causes parsing issues
 
+### Phone Number Normalization
+
+The tool can optionally normalize phone numbers to the international E.164 format (e.g., `+31612345678` or `+12125551234`). This standardization makes phone numbers consistent and easier to work with across different systems.
+
+- **E.164 Format**: International standard format: `+[country code][number]` (no spaces)
+- **Optional Feature**: Normalization is off by default; enable with `--normalize-phones` flag
+- **Interactive Prompt**: If no flag is provided, the tool will prompt you whether to enable normalization
+- **Region Detection**: The tool intelligently determines the phone number region:
+  - **Auto-Detection**: Attempts to detect your country from system locale settings
+  - **Interactive Prompt**: If auto-detection fails, prompts for a 2-letter country code
+  - **Command-Line Override**: Use `--phone-region CODE` to explicitly specify (e.g., `--phone-region NL` for Netherlands)
+  - **No Silent Default**: Unlike some tools, this app does not silently default to US - it requires explicit region specification or successful auto-detection
+- **Leading Zero Handling**: Correctly handles national format numbers with leading zeros:
+  - `061234567` (Netherlands) → `+3161234567` (when using `--phone-region NL`)
+  - The leading zero (national trunk prefix) is automatically removed and replaced with the country code
+- **Preserves Types**: Phone type information (home, work, mobile, etc.) is preserved during normalization
+- **Graceful Handling**: Invalid or unparseable numbers keep their original format with a warning logged
+- **Applies to Both Outputs**: Normalization affects both vCard and CSV exports when enabled
+
+**Why Region Matters**: The default region is crucial for correctly parsing phone numbers that don't have an international prefix (+). For example, "415 555 1234" could be interpreted differently depending on whether the default region is US (becomes +1 415 555 1234) or another country. Numbers with a '+' prefix are parsed independently of the default region.
+
+### CSV Export
+
+Export your contacts to CSV format for easy viewing in spreadsheet applications or import into other systems.
+
+- **Comprehensive Fields**: Includes all key contact information (name, phones, emails, addresses, organization, etc.)
+- **Multiple Values**: Handles multiple phones, emails, and addresses with separate columns (up to 5 phones, 5 emails, 3 addresses)
+- **Type Information**: Includes phone and email type information (home, work, mobile, etc.)
+- **Proper Formatting**: Handles special characters, commas, quotes, and newlines correctly
+- **Optional Export**: Only exports when `--csv` or `--export-csv` flag is provided
+
 ### Preview and Logging
 
 - **Preview Workflow**:
@@ -158,6 +223,7 @@ The tool ensures **zero data loss**:
   - Name extraction fixes (when empty/placeholder names are corrected)
   - Duplicate detection results with matching criteria
   - Merge operations with before/after states
+  - Phone normalization statistics (when enabled)
   - Warnings and edge cases
   - Summary statistics
   - ICE contact exclusions
@@ -177,6 +243,8 @@ Contact_Deduplication/
 │   ├── duplicate_detector.py # Duplicate detection logic
 │   ├── contact_merger.py    # Contact merging logic
 │   ├── preview_generator.py # Preview generation
+│   ├── phone_normalizer.py # Phone number normalization
+│   ├── csv_exporter.py      # CSV export functionality
 │   └── logger.py            # Logging utilities
 ├── data/
 │   ├── input/              # Place your .vcf files here
